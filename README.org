@@ -1,0 +1,42 @@
+* The Navi Project
+
+Navi is an ambitious project to combine distributed parallel processing,
+wearable systems and dynamic languages into a malleable framework which can be
+adapted to any users' needs.
+
+Specific use cases include:
+  - On-the-spot custom computations over large data sets.
+  - Lazy fetching of long-running computations.
+  - Memory augmentation.
+
+This repository contains the base build scripts to assemble a functioning
+system, as well as the Navi design documents.
+
+Note: Navi is in a state of extreme flux, and as such the code should be
+considered pre-alpha quality. It works for me, but may not work for your use
+cases.
+
+** Getting started with Navi
+
+To get started with the source, you'll need the following prerequisites:
+  - Apache Ant
+  - Java SDK
+  - Android SDK
+  - A recent Steel Bank Common Lisp built for a recent x86-64 Linux system
+  - An Android device
+  - Some form of Bluetooth keyboard
+  - At least one Intel Edison
+
+Each of these prerequisites have their own lengthy setup procedures as well,
+which won't be mentioned here.
+
+Once you have these bits setup, you'll want to checkout the code:
+  - =$ git clone https://github.com/jtgans/navi.git=
+  - =$ git submodule update --init=
+  - Read [[navi.org]] about the design.
+  - Build the [[https://github.com/jtgans/gypsum][Gypsum]] display server.
+  - Start Gypsum on a real Android device.
+  - Build [[https://github.com/jtgans/silica][Silica]] for either the Intel Edison or a Linux system with Bluetooth
+    functionality.
+  - Start Silica and connect to the Gypsum server.
+  - Hack.

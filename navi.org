@@ -1,0 +1,480 @@
+#+STARTUP: inlineimages
+
+* Overall Design
+
+Glass is a generalized display with sensors, but isn't so great at being a
+compute platform. Let's just use it for display and sensors instead. For
+computations, a separate module to run as the compute platform is necessary. I
+chose the Edison as the compute platform because it runs straight linux and has
+a number of base features that do exactly what I need and nothing more.
+
+Hereafter I will refer to the Edison as a "Mote" for consistency, and moreover,
+as the "root Mote" that drives any other Motes in the Bluetooth piconet.
+
+* Silica
+
+Silica is the base system running on the root Mote in the wearable computing
+system. The underlying computing system is effectively a simple Linux
+distribution with Steel Bank Common Lisp running on top as the main execution
+engine. Common Lisp was chosen for its flexibility, metaprogramming,
+code-as-data philosophy, and large library of useful functions.
+
+Input to Silica is via Bluetooth HID devices such as a mouse or keyboard, or a
+Bluetooth twiddler 3. Internet connectivity is done via wifi, and connectivity
+to Gypsum (for display output and sensory input) is done via Bluetooth RFCOMM.
+
+** Yocto Linux
+
+Unfortunately, those guys at Intel decided to use Yocto linux (formerly known as
+openembedded). As a result, the build for the Edison is extremely
+overcomplicated and insane -- we actually have to build a full Linux
+distribution every time we want to make a new release or push a different change
+to the device.
+
+Since we can't just change the distro without serious overhauling of the device,
+we're stuck with it. So here's the steps to get a reproducible build:
+
+  1. =$ git clone git://git.yoctoproject.org/poky=
+  2. =$ cd poky=
+  3. =$ git clone git://git.yoctoproject.org/meta-intel.git=
+  4. =$ source oe-init-build-env=
+
+*WHATEVER YOU DO, DON'T CHECK OUT THE EDISON BRANCH!* It's an older release of
+Yocto, and has nothing to do with the Edison board.
+
+At this point, the Yocto sources are checked out. Great. Now we need to add
+dependencies for the build system to figure out what it wants to build for. We
+do this by adding a couple of lines to [[file:silica/poky/build/conf/bblayers.conf::/media/psf/Home/Projects/navi/silica/poky/meta-intel%20\][build/conf/bblayers.conf]] and
+[[file:silica/poky/build/conf/local.conf::#][build/conf/local.conf]]:
+
+  - Add the lines "poky/meta-intel \"and "poky/meta-intel/meta-crownbay \"
+    without quotes to the =BBLAYERS= variable definition. Yes, the backslashes
+    are required.
+  - Set =MACHINE= to ?= "crownbay-noemgd". Adjust any other local.conf vars you
+    think might be necessary to make the build not slow, or somewhat bearable.
+
+At this point things should be setup.
+
+** TODO Application Model
+** TODO UI Model
+
+* Gypsum
+
+Gypsum is the display, sensor, and audio engine used on Glass. This is
+effectively a much simplified display protocol with simple primitives such as
+lines, circles, boxes, gradients, font drawing, and so on, similar to X windows.
+Unlike X windows, however, Gypsum also provides a mechanism for providing simple
+sensor information back to Silica, as well as a very simple audio playback API.
+
+The protocol is based upon a bidirectional RFCOMM link using zlib compressed
+sexprs, with the display and parsing engine written in C++ and utilizing
+the [[http://sexpr.sourceforge.net/][sfsexp]] sexpr parsing library.
+
+The display engine exists as a standard Android service drawing to a RemoteViews
+in the existing UI.
+
+** Protocol
+
+In general, Gypsum is designed to be a primitive raster screen with enough
+abstraction that the protocol can be more efficient than simply blasting pixels
+across the Bluetooth link. The closest analogy to this command language would be
+the old RIP BBS raster art language, where raster drawing commands were
+represented as a series of escape sequences interpreted by the RIP graphics
+driver.
+
+All drawing in Gypsum happens in an off-screen buffer. The results of each
+command are effectively hidden until a =flip= command is sent, in which the
+on-screen buffer and the off-screen buffer are swapped and the result displayed
+to the user.
+
+Bitmap images are abstracted away as a two-part storage and re-use mechanism.
+There is no limit to the number of bitmaps that may be stored. Bitmaps stored
+using the same names overwrite one another.
+
+Commands to draw to the screen in Gypsum are expressed as a series of
+sexprs followed by a newline (CR followed by LF). Each command takes the
+basic form of a command symbol followed by a plist containing the parameter name
+tags and values.
+
+#+BEGIN_SRC lisp
+  (<command> :param1 <sexpr> :param2 <sexpr>)\r\n
+#+END_SRC
+
+Several data types are supported for each parameter value. These are:
+
+  - Strings :: just your average string as in C. Escape characters are not
+               supported, with the exception of an escaped quote character to
+               allow for embedded quotes. While inside of a string, CR and LF
+               characters may be used without prematurely terminating the
+               command. Ie: "Bob stared at the spec, slack-jawed. \"Wow,\" he
+               said."
+  - Integers :: average integers as in C. Ie: 23
+  - RGB Hex Strings :: just a standard string of the form "#RRGGBB". Invalid
+       strings are parsed as #FFFFFF.
+  - Coordinates :: An sexpr of the form (<x-position> . <y-position>).
+                   Positions are in scaled pixels.
+  - Symbols :: Just a lisp quoted symbol. Ie: 'foo
+
+In general, Gypsum is stateful, which means that if a command is issued without
+any tags associated with it, then the previous values used for those tags will
+be used for the next command. Ie:
+
+#+BEGIN_SRC lisp
+  (box :width 1 :color "#FF0000" :filled nil :start (0 . 0) :end (5 . 5))
+  (line)
+#+END_SRC
+
+Will draw an empty box with a 1px border from (0, 0) to (5, 5) on the screen,
+and then draw a line between the same coordinates using the same width and
+color. This allows for common styles to be re-used with limited overhead in the
+protocol itself.
+
+The special symbols =last-start= and =last-end= may be used in coordinates to
+represent the previous command's start or ending point. This allows for
+efficient polygonal lines to be drawn. Ie:
+
+#+BEGIN_SRC lisp
+  (line :start (0 . 0) :end (0 . 5))
+  (line :start 'last-end :end (5 . 5))
+  (line :end (5 . 0))
+  (line :end (0 . 0))
+#+END_SRC
+
+The above starts drawing a line at (0, 0) and extends to the right 5 scaled
+pixels. The next sexpr uses the previous sexpr's ending point to start from.
+Once that's set, the :start parameter can be omitted altogether, completing a
+box figure.
+
+Note: if no previous values had been used (as in first power-on and use) then
+reasonable defaults will be chosen (ie: white color, droid sans font, (0, 0),
+etc.).
+
+The following commands are implemented:
+
+  - open-window :: opens a window with the given id for drawing
+    - :window :: the string used to reference the newly opened window with.
+
+  - text :: draws a line of text to the screen
+    - :window :: the string used to reference the window to draw to.
+    - :font :: the string name of the font to render with.
+    - :weight :: the weight of the font. One of the symbols =normal= or =bold=.
+    - :size :: the integer size of the font.
+    - :color :: an HTML RGB hex string describing the color to use.
+    - :text :: the string to render.
+    - :start :: the position to render the text at.
+
+  - line :: draws a line
+    - :window :: the string used to reference the window to draw to.
+    - :width :: the integer thickness of the line in scaled pixels.
+    - :color :: an HTML RGB hex string describing the foreground color to use.
+    - :start :: the coordinate to start drawing from.
+    - :end :: the coordinate to end at.
+
+  - box :: draws a box
+    - :window :: the string used to reference the window to draw to.
+    - :width :: the thickness of the walls of the box in scaled pixels. If not
+                specified, the last width will be used.
+    - :filled :: a boolean value (nil or #t) representing whether or not this
+                 box is just the frame, or is completely filled in. If not
+                 specified, the last value used will be used.
+    - :start :: the coordinate for the upper left corner of the box.
+    - :end :: the coordinate for the lower right corner of the box.
+
+  - store-image :: stores a bitmap by name for later use with the =draw-image=
+                   command
+    - :data :: a base64 encoded string containing the image to draw.
+    - :name :: a string to reference this image by for later use.
+
+  - draw-image :: draws a previously =store-image='d bitmap to the screen.
+    - :window :: the string used to reference the window to draw to.
+    - :start :: the coordinate for the upper left corner of the bitmap on screen.
+    - :end :: the coordinate for the lower right corner of the bitmap on screen.
+    - :name :: the string used to reference a previously stored image.
+
+  - commit :: commits the drawing buffer to the currently displayed buffer.
+    - :window :: the string used to reference the window to flip.
+
+  - lock-on :: forces the screen to stay on until a corresponding =lock-off=
+               command is issued. Locks are per-window.
+    - :window :: the string used to reference the window to lock.
+
+  - lock-off :: releases the wakelock that prevents Glass from sleeping.
+    - :window :: the string used to reference the window to lock.
+
+  - wake :: wakes the Glass screen for a little bit.
+
+  - store-sound :: stores an audio file for later use with the =play-sound=
+                   command
+    - :data :: a base64 encoded string containing the sound to store.
+    - :name :: a string to reference this sound by for later use.
+
+  - play-sound :: plays a previously =store-sound='d sound.
+    - :volume :: the volume to play back at.
+    - :channel :: the channel number to play on. There are at most 8 channels.
+    - :name :: a string to reference a previously stored sound.
+
+  - stop-sound :: stops a sound that may be currently playing.
+    - :channel :: the channel number to stop.
+
+  - set-volume :: sets the max volume for all sounds.
+    - :percent :: an integer value between 0 and 100 representing the percentage
+                  of volume to use.
+
+  - speak :: uses Android's TTS engine to speak text.
+    - :speed :: integer value representing the speed at which the text is spoken.
+    - :text :: a string containing the text to speak. Sounds can be played back
+               by referencing the name they were stored under in the string
+               between curly braces. Ie: "{attention} Build has failed."
+    - :voice :: a string containing the name of the voice to use.
+
+  - stop-speech :: stops any current speech in progress.
+
+Erroneous commands are simply dropped on the floor. Too many open parens simply
+fail to execute the command until an equivalent number of close parens are sent
+or a newline is sent (resetting the internal paren counter). Too many close
+parens are simply dropped on the floor and ignored.
+
+** Application Model 
+
+Gypsum is designed to behave similar to a standard Glass application.
+Effectively this means that each window of output is displayed as a separate
+live card in the timeline.
+
+This leads to an overall structure of the application like so:
+
+  - GypsumService :: The hub of the application. This service establishes the
+                     bluetooth RFCOMM socket, accepts open connections and
+                     handles version negotation. Passes the input FDs through an
+                     intent to the DisplayActivity and AudioService, and output
+                     FD to the SensorService once the initial version handshake
+                     is complete.
+
+  - DisplayActivity :: The display engine. This handles keeping track of image
+       resources, windows, and handles incoming callbacks from the CommandParser
+       code to actually carry out drawing. Written as two threads, the UI thread
+       that uses AsyncTasks to carry out actual drawing requests, and the
+       CommandParser thread which reads tokens in from the input FD of the
+       RFCOMM socket established by GypsumService.
+
+  - AudioService :: A bound service that controls storage of audio files and
+                    manages the TTS engine to control audio output from Silica.
+                    Started by the DisplayActivity, and handles incoming calls
+                    from its CommandParser.
+
+  - SensorService :: Manages sensor information such as head direction, ambient
+                     light, etc. Periodically writes out to the output FD to
+                     send notifications back to Silica. Started by GypsumService
+                     upon connection negotiation.
+
+On first boot, GypsumService starts up and registers for an RFCOMM listening
+connection with the UUID =199d6fc0-adcb-11e4-a32c-6c4008a5fbd2=. Upon first
+connect, Gypsum sends the following sexpr to the client:
+
+#+BEGIN_SRC lisp
+  (gypsum . 1)
+#+END_SRC
+
+No commands may be sent from the client until this version identifier is
+received. Upon receipt, the client must respond with the following sexpr:
+
+#+BEGIN_SRC lisp
+  (silica . 1)
+#+END_SRC
+
+These sexprs contain the magic names of the client and server in the car,
+followed by the version number of the on-wire protocol in the cdr. If the
+protocol version that the connecting client understands is not the same as the
+one reported by gypsum, the client and server must disconnect. The behavior of
+the Gypsum display server is undefined if this is not done.
+
+After protocol negotiation is complete, the resulting FDs for the
+=BluetoothServerSocket= are passed to =DisplayActivity=, =AudioService=, and
+=SensorService= for processing of commands and notifications.
+
+Once a connection is established, =DisplayActivity= waits for events from the
+RFCOMM socket, and =SensorService= begins sending notifications from various
+sensors on the system.
+
+The incoming command path is something similar to this:
+
+  1. sexprs are parsed line-by-line until a proper sexpr is parsed.
+  2. The =CommandParser= thread validates that the car of the sexpr is
+     a valid command symbol. If not, =CommandParser= simply moves on to the
+     next sexpr available in the FD.
+  3. =CommandParser= converts each =:tag <value>= pair of the cdr into a
+     =Value= instance.
+  4. =CommandParser= fires off a =Command= callback to process the command with the
+     associated plist in =HashMap= form.
+
+Commands are registered with the =CommandParser= shortly after instantiation.
+
+* Mojos and Motes
+
+#+BEGIN_CENTER
+[[file:mojos.jpg]]
+
+[[https://www.youtube.com/watch?v%3DI6mVTSFUnGk][Mojo!]]
+#+END_CENTER
+
+Effectively signed remote continuations and closures that run on a given host.
+Hosts (or Motes -- short for Remote) are either big clouds of large servers,
+individual machines, or small groups of computing devices sewn into clothing.
+The core of the idea is that computations can be quickly designed and fired off
+from a wearable system for later retrieval for relatively battery-inefficient
+computations.
+
+It should be noted that Motes (and Mojos, for that matter) are expected to be
+relatively well controlled by their owners -- these are not expected to be
+public resources. A future version of the Mojo/Mote design may address this
+further, as it has direct bearing in shared AR environments where Mojos can
+exist as visual agents running in distributed public-use Mote environments.
+
+Mojos are long-running, trivially parallelizable ad-hoc processes that are
+allowed to execute securely on any given host that implements the Mojo protocol
+and accepts the given signing key. Mojos, having both the benefits of closures
+and continuations, can easily migrate between Motes when necessary, either
+because of CPU scheduling pressure, battery pressure, or accessibility
+requirements.
+
+Security is implemented by pre-sharing a public-key with a given Mote (or Motes)
+and signing a Mojo's code with the private key. This also allows for migration
+of the given Mojo between Motes, while still provably retaining the code
+integrity.
+
+Only authorized signers are allowed to manipulate and execute Mojos on the given
+Mote.
+
+** Theory of operation
+
+Each Mojo is constructed of a specific form. Ie:
+
+#+BEGIN_SRC lisp
+  (defvar mojo-signing-key nil
+    "Contains the GPG signing key name for signing a mojo before transmission.")
+
+  (defmojo hello-world ()
+    "Returns the string `hello world'."
+    "hello world")
+#+END_SRC 
+
+These forms are then transmitted via the =run-mojo= form.
+
+#+BEGIN_SRC lisp
+  (defvar hello-world-mojo-continuation nil
+    "Contains the ID for the given mojo")
+
+  (run-mojo :mojo hello-world-mojo
+            :endpoint "http://www.theonelab.com/mojo"
+            :key mojo-signing-key)
+#+END_SRC
+
+When =run-mojo= is executed, the mojo's form is converted into an sexpr
+and signed with the given signing key. This bundle is then transmitted to the
+given Mote, where the signing key is validated, the code signature is validated,
+a new thread/process sandbox is created and the mojo inserted into it. After
+this, a new ID is returned for that executing mojo for the client-side to use to
+query for results.
+
+Mojos come in two forms:
+  - Simple closures that return a single result.
+  - Streaming closures that continually update a resulting sexpr.
+
+Simple closures simply return a single sexpr. No result will be available
+until the computation is complete.
+
+Streaming closures that are ongoing return results in a persistent way via
+additional functions such as =mojo-get-result= and the use of =setf= to adjust
+the output.
+
+** Mojo Protocol
+
+This is basically HTTP with a few extra special headers to help control it.
+
+*** Starting a Mojo
+
+Request:
+
+#+BEGIN_SRC http
+HTTP/1.1 POST /mojo
+X-Mojo-Signature: <base64-encoded data of the code signature>
+X-Mojo-Description: "Returns the string `hello world'"
+Content-Type: x-application/mojo
+
+"hello world"
+#+END_SRC
+
+Response:
+
+#+BEGIN_SRC http
+HTTP/1.1 200 OK
+X-Mojo-Identifier: <uuid>
+X-Mojo-Status: running
+#+END_SRC
+
+Or on authorization error:
+
+#+BEGIN_SRC http
+HTTP/1.1 401 Unauthorized
+X-Mojo-Error-String: Signing key did not match.
+...additional standard HTTP headers...
+#+END_SRC
+
+*** Querying a Mojo
+
+Request:
+
+First, check for changes
+
+#+BEGIN_SRC http
+HTTP/1.1 HEAD /mojo/<uuid>
+X-Mojo-Signature: <base64-encoded version of the uuid signature>
+#+END_SRC
+
+And the response to the HEAD:
+
+#+BEGIN_SRC http
+HTTP/1.1 200 OK
+X-Mojo-Status: ...
+Last-Modified: ...
+#+END_SRC
+
+If it's changed, we fetch the new data:
+
+#+BEGIN_SRC http
+HTTP/1.1 GET /mojo/<uuid>
+X-Mojo-Signature: <base64-encoded version of the uuid signature>
+#+END_SRC
+
+Response:
+
+#+BEGIN_SRC http
+HTTP/1.1 200 OK
+X-Mojo-Status: ...
+Last-Modified: ...
+Content-Type: x-application/mojo-result
+...additional standard HTTP headers...
+
+...sexpr result...
+#+END_SRC
+
+Even if the Mojo has finished, the resulting sexpr it produces is stored
+until it is deleted.
+
+*** Stop a Mojo or eliminate past Mojo output
+
+Request:
+
+#+BEGIN_SRC http
+HTTP/1.1 DELETE /mojo/<uuid>
+X-Mojo-Signature: <base64-encoded version of the uuid signature>
+#+END_SRC
+
+Response:
+
+#+BEGIN_SRC http
+HTTP/1.1 200 OK
+#+END_SRC
+
+*** TODO Migration of a Mojo between servers
+*** TODO Interactive request and response with a Mojo
+*** TODO Load balancing via a Mojo director and multiple Motes
