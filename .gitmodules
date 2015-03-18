@@ -1,0 +1,12 @@
+[submodule "gypsum"]
+	path = gypsum
+	url = git@github.com:jtgans/gypsum.git
+[submodule "silica"]
+	path = silica
+	url = git@github.com:jtgans/silica.git
+[submodule "cl-gypsum-client"]
+	path = cl-gypsum-client
+	url = git@github.com:jtgans/cl-gypsum-client.git
+[submodule "cl-evdev"]
+	path = cl-evdev
+	url = git@github.com:jtgans/cl-evdev.git
