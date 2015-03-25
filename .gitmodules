@@ -10,3 +10,7 @@
 [submodule "cl-evdev"]
 	path = cl-evdev
 	url = git@github.com:jtgans/cl-evdev.git
+[submodule "poky"]
+	path = poky
+	url = git@github.com:jtgans/poky.git
+	branch = navi
