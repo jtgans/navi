@@ -56,7 +56,20 @@ do this by adding a couple of lines to [[file:silica/poky/build/conf/bblayers.co
 At this point things should be setup.
 
 ** TODO Application Model
+
+"Applications" are composed of unique threads of execution, one per application
+instance. Applications may only launch once, but may fork as many threads as are
+necessary to continue execution.
+
+There are two kinds of applications in the Navi model: user-facing applications
+(text editors, organizers, file managers) and services (location loggers,
+context token generators).
+
+Use [[https://github.com/zkat/chanl][ChanL]] for IPC.
+
 ** TODO UI Model
+
+Use [[http://www.xach.com/lisp/zpb-ttf/][ZPB-TTF]] for TrueType metric calculations.
 
 * Gypsum
 
@@ -307,6 +320,20 @@ The incoming command path is something similar to this:
      associated plist in =HashMap= form.
 
 Commands are registered with the =CommandParser= shortly after instantiation.
+
+** TODO Events
+
+User input is read via `cl-evdev' and delivered to the currently active window's
+event handler. The event handler delivers events to the currently focused
+widget.
+
+As input to Navi is primarily done via keyboard events, focus through widgets is
+done via carets.
+
+Unlike X, Gypsum IPC is done via event queues which are registered under well
+known names inside of a hash table in Silica rather than via window properties.
+All IPC is composed of CLOS object instances that derive from the sb-event EVENT
+class.
 
 * Mojos and Motes
 
