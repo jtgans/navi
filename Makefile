@@ -12,6 +12,7 @@ clean:
 	make -C gypsum clean
 	make -C silica clean
 	rm -rf out
+	find . -iname \*.fasl -exec rm '{}' +
 
 test: silica gypsum
 	make -C gypsum test
