@@ -14,10 +14,6 @@
 	path = cl-evdev
 	url = git@github.com:jtgans/cl-evdev.git
 	branch = master
-[submodule "poky"]
-	path = poky
-	url = git@github.com:jtgans/poky.git
-	branch = navi
 [submodule "cl-event-handler"]
 	path = cl-event-handler
 	url = git@github.com:jtgans/cl-event-handler.git
